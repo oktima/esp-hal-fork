@@ -165,8 +165,7 @@ impl embedded_io_07::Error for TxError {
 #[instability::unstable]
 pub use crate::soc::clocks::UartFunctionClockSclk as ClockSource;
 use crate::soc::clocks::{
-    UartBaudRateGeneratorConfig as BaudRateConfig,
-    UartFunctionClockConfig as ClockConfig,
+    UartBaudRateGeneratorConfig as BaudRateConfig, UartFunctionClockConfig as ClockConfig,
 };
 
 /// Number of data bits
@@ -283,6 +282,18 @@ pub struct HwFlowControl {
     pub rts: RtsConfig,
 }
 
+/// Driver control configuration.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[instability::unstable]
+pub enum DriverControl {
+    /// Enable driver control.
+    Enabled,
+    #[default]
+    /// Disable driver control.
+    Disabled,
+}
+
 /// Defines how strictly the requested baud rate must be met.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -322,6 +333,9 @@ pub struct Config {
     /// Hardware flow control.
     #[builder_lite(unstable)]
     hw_flow_ctrl: HwFlowControl,
+    /// Driver control.
+    #[builder_lite(unstable)]
+    driver_ctrl: DriverControl,
     /// Clock source used by the UART peripheral.
     #[builder_lite(unstable)]
     clock_source: ClockSource,
@@ -343,6 +357,7 @@ impl Default for Config {
             stop_bits: Default::default(),
             sw_flow_ctrl: Default::default(),
             hw_flow_ctrl: Default::default(),
+            driver_ctrl: Default::default(),
             clock_source: Default::default(),
         }
     }
@@ -466,6 +481,7 @@ where
 
         let rts_pin = PinGuard::new_unconnected();
         let tx_pin = PinGuard::new_unconnected();
+        let dtr_pin = PinGuard::new_unconnected();
 
         let mut serial = Uart {
             rx: UartRx {
@@ -479,6 +495,7 @@ where
                 phantom: PhantomData,
                 guard: tx_guard,
                 peri_clock_guard,
+                dtr_pin,
                 rts_pin,
                 tx_pin,
                 baudrate: config.baudrate,
@@ -517,6 +534,7 @@ pub struct UartTx<'d, Dm: DriverMode> {
     phantom: PhantomData<Dm>,
     guard: PeripheralGuard,
     peri_clock_guard: UartClockGuard<'d>,
+    dtr_pin: PinGuard,
     rts_pin: PinGuard,
     tx_pin: PinGuard,
     baudrate: u32,
@@ -663,6 +681,7 @@ impl<'d> UartTx<'d, Blocking> {
             phantom: PhantomData,
             guard: self.guard,
             peri_clock_guard: self.peri_clock_guard,
+            dtr_pin: self.dtr_pin,
             rts_pin: self.rts_pin,
             tx_pin: self.tx_pin,
             baudrate: self.baudrate,
@@ -687,6 +706,7 @@ impl<'d> UartTx<'d, Async> {
             phantom: PhantomData,
             guard: self.guard,
             peri_clock_guard: self.peri_clock_guard,
+            dtr_pin: self.dtr_pin,
             rts_pin: self.rts_pin,
             tx_pin: self.tx_pin,
             baudrate: self.baudrate,
@@ -760,6 +780,23 @@ impl<'d, Dm> UartTx<'d, Dm>
 where
     Dm: DriverMode,
 {
+    /// Configure DTR pin
+    #[instability::unstable]
+    pub fn with_dtr(mut self, dtr: impl PeripheralOutput<'d>) -> Self {
+        let dtr = dtr.into();
+
+        dtr.apply_output_config(&OutputConfig::default());
+        dtr.set_output_enable(true);
+
+        self.dtr_pin = dtr.connect_with_guard(self.uart.info().dtr_signal);
+
+        self.regs()
+            .rs485_conf()
+            .modify(|_, w| w.rs485_en().set_bit());
+
+        self
+    }
+
     /// Configure RTS pin
     #[instability::unstable]
     pub fn with_rts(mut self, rts: impl PeripheralOutput<'d>) -> Self {
@@ -1756,6 +1793,26 @@ where
     /// ```
     pub fn with_tx(mut self, tx: impl PeripheralOutput<'d>) -> Self {
         self.tx = self.tx.with_tx(tx);
+        self
+    }
+
+    #[procmacros::doc_replace]
+    /// Assign the TX pin for UART instance.
+    ///
+    /// Sets the specified pin to push-pull output and connects it to the UART
+    /// TX signal.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let uart = Uart::new(peripherals.UART0, Config::default())?.with_tx(peripherals.GPIO2).with_dtr(peripherals.GPIO3);
+    ///
+    /// # {after_snippet}
+    /// ```
+    pub fn with_dtr(mut self, dtr: impl PeripheralOutput<'d>) -> Self {
+        self.tx = self.tx.with_dtr(dtr);
         self
     }
 
@@ -3011,6 +3068,9 @@ pub struct Info {
 
     /// RTS (Request to Send) pin
     pub rts_signal: OutputSignal,
+
+    /// DTR (Data Terminal Ready) pin
+    pub dtr_signal: OutputSignal,
 }
 
 /// Peripheral state for a UART instance.
@@ -3710,7 +3770,7 @@ impl PartialEq for Info {
 unsafe impl Sync for Info {}
 
 for_each_uart! {
-    ($id:literal, $inst:ident, $peri:ident, $rxd:ident, $txd:ident, $cts:ident, $rts:ident) => {
+    ($id:literal, $inst:ident, $peri:ident, $rxd:ident, $txd:ident, $cts:ident, $rts:ident, $dtr:ident) => {
         impl Instance for crate::peripherals::$inst<'_> {
             fn parts(&self) -> (&'static Info, &'static State) {
                 #[handler]
@@ -3735,6 +3795,7 @@ for_each_uart! {
                     rx_signal: InputSignal::$rxd,
                     cts_signal: InputSignal::$cts,
                     rts_signal: OutputSignal::$rts,
+                    dtr_signal: OutputSignal::$dtr,
                 };
                 (&PERIPHERAL, &STATE)
             }
