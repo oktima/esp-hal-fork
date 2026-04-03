@@ -3,11 +3,7 @@ use std::{cell::RefCell, fmt::Display, thread};
 use proc_macro2::{TokenStream, TokenStream as TokenStream2};
 use quote::{ToTokens, quote};
 use syn::{
-    Attribute,
-    Meta,
-    ReturnType,
-    Token,
-    Type,
+    Attribute, Meta, ReturnType, Token, Type,
     parse::{Parse, ParseBuffer},
     punctuated::Punctuated,
 };
@@ -190,7 +186,7 @@ pub fn main_fn() -> TokenStream2 {
             let mut executor = ::esp_rtos::embassy::Executor::new();
             let executor = unsafe { __make_static(&mut executor) };
             executor.run(|spawner| {
-                spawner.must_spawn(__embassy_main(spawner));
+                spawner.spawn(__embassy_main(spawner).unwrap());
             })
         }
     }
